@@ -1,0 +1,111 @@
+local radar = peripheral.wrap("back")
+
+local yawGear = peripheral.wrap("left")   -- Yaw
+local pitchGear = peripheral.wrap("right") -- Pitch
+
+local currentYaw = 0
+local currentPitch = 0
+
+local selfX = 958
+local selfY = 71
+local selfZ = 107
+
+local function deg(rad)
+    return rad * 180 / math.pi
+end
+
+local function norm180(a)
+    a = (a + 180) % 360 - 180
+    return a
+end
+
+local function norm360(a)
+    a = a % 360
+    if a < 0 then a = a + 360 end
+    return a
+end
+
+local function shortestDelta(current, target)
+    return norm180(target - current)
+end
+
+local function moveGear(gear, delta)
+    if not gear then return end
+
+    local amount = math.abs(delta)
+    if amount < 0.5 then return end
+
+    local dir = delta >= 0 and 1 or -1
+
+    gear.rotate(amount, dir)
+end
+
+local function getPos(ent)
+    local p = ent["position"]
+    if not p then return nil end
+
+    return tonumber(p["x"]), tonumber(p["y"]), tonumber(p["z"])
+end
+
+local function calcAngles(tx, ty, tz)
+    local dx = tx - selfX
+    local dy = ty - selfY
+    local dz = tz - selfZ
+
+    local horizontal = math.sqrt(dx * dx + dz * dz)
+
+    local yaw = deg(math.atan2(dx, -dz))
+
+    local pitch = deg(math.atan2(dy, horizontal))
+
+    return yaw, pitch, math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+local function findClosestPlayer(tracks)
+    local closest = nil
+    local closestDist = math.huge
+    local closestYaw = 0
+    local closestPitch = 0
+
+    for _, ent in pairs(tracks) do
+        local x, y, z = getPos(ent)
+
+        if x and y and z then
+            local yaw, pitch, dist = calcAngles(x, y, z)
+
+            if dist < closestDist then
+                closest = ent
+                closestDist = dist
+                closestYaw = yaw
+                closestPitch = pitch
+            end
+        end
+    end
+
+    return closest, closestYaw, closestPitch, closestDist
+end
+
+while true do
+    local tracks = radar.getTracks()
+
+    local target, targetYaw, targetPitch, dist = findClosestPlayer(tracks)
+
+    if target then
+        local yawDelta = shortestDelta(currentYaw, targetYaw)
+        local pitchDelta = shortestDelta(currentPitch, targetPitch)
+
+        print("target yaw:", targetYaw)
+        print("target pitch:", targetPitch)
+        print("yaw delta:", yawDelta)
+        print("pitch delta:", pitchDelta)
+        print("distance:", dist)
+
+        moveGear(yawGear, yawDelta)
+        moveGear(pitchGear, pitchDelta)
+
+        currentYaw = norm360(currentYaw + yawDelta)
+        currentPitch = currentPitch + pitchDelta
+    end
+
+    sleep(0.2)
+end
