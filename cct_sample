@@ -1,17 +1,14 @@
 local radar = peripheral.wrap("back")
 
--- 两个可编程齿轮箱/Sequenced Gearshift
-local yawGear = peripheral.wrap("left")   -- 水平旋转
-local pitchGear = peripheral.wrap("right") -- 俯仰旋转
+local yawGear = peripheral.wrap("left")   -- Yaw
+local pitchGear = peripheral.wrap("right") -- Pitch
 
--- 程序启动时假设当前朝向为 0, 0
 local currentYaw = 0
 local currentPitch = 0
 
--- 959 89 111
-local selfX = 959
-local selfY = 89
-local selfZ = 111
+local selfX = 958
+local selfY = 71
+local selfZ = 107
 
 local function deg(rad)
     return rad * 180 / math.pi
@@ -28,12 +25,10 @@ local function norm360(a)
     return a
 end
 
--- 计算从当前角度转到目标角度的最短旋转量
 local function shortestDelta(current, target)
     return norm180(target - current)
 end
 
--- 兼容 Sequenced Gearshift / 可编程齿轮箱
 local function moveGear(gear, delta)
     if not gear then return end
 
@@ -42,18 +37,7 @@ local function moveGear(gear, delta)
 
     local dir = delta >= 0 and 1 or -1
 
-    -- 如果你的方块方法叫 move
-    if gear.move then
-        gear.move(amount, dir)
-
-    -- 如果你的方块方法叫 rotate
-    elseif gear.rotate then
-        gear.rotate(amount, dir)
-
-    -- 如果是 setAngle 之类的可编程齿轮箱 API，可按实际方法改这里
-    elseif gear.setTargetAngle then
-        gear.setTargetAngle(delta)
-    end
+    gear.rotate(amount, dir)
 end
 
 local function getPos(ent)
@@ -70,10 +54,8 @@ local function calcAngles(tx, ty, tz)
 
     local horizontal = math.sqrt(dx * dx + dz * dz)
 
-    -- yaw: 北为 0，东为 90，南为 180/-180，西为 -90
     local yaw = deg(math.atan2(dx, -dz))
 
-    -- pitch: 水平为 0，向上为正，向下为负
     local pitch = deg(math.atan2(dy, horizontal))
 
     return yaw, pitch, math.sqrt(dx * dx + dy * dy + dz * dz)
@@ -86,9 +68,6 @@ local function findClosestPlayer(tracks)
     local closestPitch = 0
 
     for _, ent in pairs(tracks) do
-        -- 你已经过滤玩家的话，这个判断可以删掉
-        -- if ent[id] ~= "某个uuid" then ...
-
         local x, y, z = getPos(ent)
 
         if x and y and z then
