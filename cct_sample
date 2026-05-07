@@ -1,34 +1,57 @@
-local RADAR_NAME = "create_radar:network_filterer_block_entity_0"
+-- ===== 配置区 =====
 
-local YAW_ADAPTER_NAME = "digital_adapter_2"
-local PITCH_ADAPTER_NAME = "digital_adapter_3"
+local RADAR_NAME = "back"
 
+-- 齿轮箱
 local YAW_GEAR_NAME = "left"
 local PITCH_GEAR_NAME = "right"
 
-local YAW_BEARING_SIDE = "up"
-local PITCH_BEARING_SIDE = "up"
+-- Digital Adapter
+local YAW_ADAPTER_NAME = "digital_adapter_2"
+local PITCH_ADAPTER_NAME = "digital_adapter_3"
 
-local SELF_X = 959
-local SELF_Y = 89
-local SELF_Z = 111
+-- 空同步轴承贴在 Adapter 的哪一面
+local YAW_BEARING_SIDE = "west"
+local PITCH_BEARING_SIDE = "west"
 
+-- 探照灯/雷达自身坐标
+local SELF_X = 958
+local SELF_Y = 71
+local SELF_Z = 107
+
+-- 初始修正
 local YAW_OFFSET = 0
 local PITCH_OFFSET = 0
 
-local YAW_SIGN = 1
-local PITCH_SIGN = 1
+-- 如果某轴方向反了改成 -1
+local YAW_DIR = 1
+local PITCH_DIR = 1
 
-local DEADZONE = 0.5
+-- 小于这个角度不动
+local DEADZONE = 0.75
 
-local MAX_STEP = 15
+-- 主循环间隔
+local LOOP_DELAY = 0.15
+
+
+-- ===== 外设 =====
 
 local radar = peripheral.wrap(RADAR_NAME)
-local yawAdapter = peripheral.wrap(YAW_ADAPTER_NAME)
-local pitchAdapter = peripheral.wrap(PITCH_ADAPTER_NAME)
 
 local yawGear = peripheral.wrap(YAW_GEAR_NAME)
 local pitchGear = peripheral.wrap(PITCH_GEAR_NAME)
+
+local yawAdapter = peripheral.wrap(YAW_ADAPTER_NAME)
+local pitchAdapter = peripheral.wrap(PITCH_ADAPTER_NAME)
+
+assert(radar, "找不到 radar")
+assert(yawGear, "找不到 yaw gear")
+assert(pitchGear, "找不到 pitch gear")
+assert(yawAdapter, "找不到 yaw adapter")
+assert(pitchAdapter, "找不到 pitch adapter")
+
+
+-- ===== 工具函数 =====
 
 local function deg(rad)
     return rad * 180 / math.pi
@@ -44,94 +67,104 @@ local function norm180(a)
     return (a + 180) % 360 - 180
 end
 
-local function clamp(v, minv, maxv)
-    if v < minv then return minv end
-    if v > maxv then return maxv end
-    return v
-end
-
 local function shortestDelta(current, target)
     return norm180(target - current)
 end
 
-local function readYaw()
-    local a = yawAdapter.getBearingAngle(YAW_BEARING_SIDE)
-    return norm360(a * YAW_SIGN + YAW_OFFSET)
-end
+local function hasMethod(p, method)
+    local methods = peripheral.getMethods(peripheral.getName(p)) or {}
 
-local function readPitch()
-    local a = pitchAdapter.getBearingAngle(PITCH_BEARING_SIDE)
-    return norm180(a * PITCH_SIGN + PITCH_OFFSET)
+    for _, m in ipairs(methods) do
+        if m == method then
+            return true
+        end
+    end
+
+    return false
 end
 
 local function moveGear(gear, delta)
-    if math.abs(delta) < DEADZONE then return end
-
-    delta = clamp(delta, -MAX_STEP, MAX_STEP)
+    if math.abs(delta) < DEADZONE then
+        return
+    end
 
     local amount = math.abs(delta)
     local dir = delta >= 0 and 1 or -1
 
-    if gear.rotate then
+    if hasMethod(gear, "rotate") then
         gear.rotate(amount, dir)
-    elseif gear.move then
+
+    elseif hasMethod(gear, "move") then
         gear.move(amount, dir)
+
     else
-        error("No properate function found!")
+        error("齿轮箱没有 rotate/move 方法")
     end
 end
 
-local function getPosition(ent)
+local function waitGear(gear)
+    if hasMethod(gear, "isRunning") then
+        while gear.isRunning() do
+            sleep(0.05)
+        end
+    end
+end
+
+local function getBearingAngle(adapter, side, offset)
+    return norm360(
+        adapter.getBearingAngle(side) + offset
+    )
+end
+
+local function getEntityPos(ent)
     local p = ent["position"]
-    if not p then return nil end
+
+    if type(p) ~= "table" then
+        return nil
+    end
 
     local x = tonumber(p["x"])
     local y = tonumber(p["y"])
     local z = tonumber(p["z"])
 
-    if not x or not y or not z then return nil end
+    if not x or not y or not z then
+        return nil
+    end
+
     return x, y, z
 end
 
-local function calcAngles(tx, ty, tz)
+local function calcAimAngles(tx, ty, tz)
     local dx = tx - SELF_X
     local dy = ty - SELF_Y
     local dz = tz - SELF_Z
 
     local horizontal = math.sqrt(dx * dx + dz * dz)
-    local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+    local distance = math.sqrt(dx * dx + dy * dy + dz * dz)
 
+    -- 北 = 0
+    -- 东 = 90
     local yaw = deg(math.atan2(dx, -dz))
 
+    -- 水平 = 0
+    -- 向上 = 正
     local pitch = deg(math.atan2(dy, horizontal))
 
-    return norm360(yaw), pitch, dist
+    return norm360(yaw), pitch, distance
 end
 
-local function getEntityList(raw)
-    return raw.players
-        or raw.entities
-        or raw.targets
-        or raw.contacts
-        or raw.tracks
-        or raw.detected
-        or raw
-end
-
-local function findClosestPlayer()
-    local raw = radar.getRaw()
-    local list = getEntityList(raw)
-
+local function findClosestPlayer(tracks)
     local best = nil
     local bestYaw = 0
     local bestPitch = 0
     local bestDist = math.huge
 
-    for _, ent in pairs(list) do
-        local x, y, z = getPosition(ent)
+    for _, ent in pairs(tracks) do
+        local x, y, z = getEntityPos(ent)
 
         if x and y and z then
-            local yaw, pitch, dist = calcAngles(x, y, z)
+            local yaw, pitch, dist =
+                calcAimAngles(x, y, z)
 
             if dist < bestDist then
                 best = ent
@@ -145,33 +178,76 @@ local function findClosestPlayer()
     return best, bestYaw, bestPitch, bestDist
 end
 
+
+-- ===== 主循环 =====
+
 while true do
+
+    local ok, tracks = pcall(function()
+        return radar.getTracks()
+    end)
+
     term.clear()
     term.setCursorPos(1, 1)
 
-    local target, targetYaw, targetPitch, dist = findClosestPlayer()
+    if not ok then
+        print("radar.getTracks() failed")
+        print(tracks)
 
-    local currentYaw = readYaw()
-    local currentPitch = readPitch()
+        sleep(1)
 
-    print("current yaw:", currentYaw)
-    print("current pitch:", currentPitch)
-
-    if target then
-        local yawDelta = shortestDelta(currentYaw, targetYaw)
-        local pitchDelta = shortestDelta(currentPitch, targetPitch)
-
-        print("target yaw:", targetYaw)
-        print("target pitch:", targetPitch)
-        print("yaw delta:", yawDelta)
-        print("pitch delta:", pitchDelta)
-        print("distance:", dist)
-
-        moveGear(yawGear, yawDelta)
-        moveGear(pitchGear, pitchDelta)
     else
-        print("no player target")
-    end
 
-    sleep(0.2)
+        local target,
+              targetYaw,
+              targetPitch,
+              dist =
+              findClosestPlayer(tracks)
+
+        if target then
+
+            local currentYaw =
+                getBearingAngle(
+                    yawAdapter,
+                    YAW_BEARING_SIDE,
+                    YAW_OFFSET
+                )
+
+            local currentPitch =
+                getBearingAngle(
+                    pitchAdapter,
+                    PITCH_BEARING_SIDE,
+                    PITCH_OFFSET
+                )
+
+            local yawDelta =
+                shortestDelta(currentYaw, targetYaw)
+                * YAW_DIR
+
+            local pitchDelta =
+                shortestDelta(currentPitch, targetPitch)
+                * PITCH_DIR
+
+            print("distance:", dist)
+
+            print("current yaw:", currentYaw)
+            print("target yaw:", targetYaw)
+            print("yaw delta:", yawDelta)
+
+            print("current pitch:", currentPitch)
+            print("target pitch:", targetPitch)
+            print("pitch delta:", pitchDelta)
+
+            moveGear(yawGear, yawDelta)
+            moveGear(pitchGear, pitchDelta)
+
+            waitGear(yawGear)
+            waitGear(pitchGear)
+
+        else
+            print("No target")
+        end
+
+        sleep(LOOP_DELAY)
+    end
 end
