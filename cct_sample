@@ -1,22 +1,37 @@
-local radar = peripheral.wrap("back")
+local RADAR_NAME = "create_radar:network_filterer_block_entity_0"
 
-local yawGear = peripheral.wrap("left")   -- Yaw
-local pitchGear = peripheral.wrap("right") -- Pitch
+local YAW_ADAPTER_NAME = "digital_adapter_2"
+local PITCH_ADAPTER_NAME = "digital_adapter_3"
 
-local currentYaw = 0
-local currentPitch = 0
+local YAW_GEAR_NAME = "left"
+local PITCH_GEAR_NAME = "right"
 
-local selfX = 958
-local selfY = 71
-local selfZ = 107
+local YAW_BEARING_SIDE = "up"
+local PITCH_BEARING_SIDE = "up"
+
+local SELF_X = 959
+local SELF_Y = 89
+local SELF_Z = 111
+
+local YAW_OFFSET = 0
+local PITCH_OFFSET = 0
+
+local YAW_SIGN = 1
+local PITCH_SIGN = 1
+
+local DEADZONE = 0.5
+
+local MAX_STEP = 15
+
+local radar = peripheral.wrap(RADAR_NAME)
+local yawAdapter = peripheral.wrap(YAW_ADAPTER_NAME)
+local pitchAdapter = peripheral.wrap(PITCH_ADAPTER_NAME)
+
+local yawGear = peripheral.wrap(YAW_GEAR_NAME)
+local pitchGear = peripheral.wrap(PITCH_GEAR_NAME)
 
 local function deg(rad)
     return rad * 180 / math.pi
-end
-
-local function norm180(a)
-    a = (a + 180) % 360 - 180
-    return a
 end
 
 local function norm360(a)
@@ -25,70 +40,122 @@ local function norm360(a)
     return a
 end
 
+local function norm180(a)
+    return (a + 180) % 360 - 180
+end
+
+local function clamp(v, minv, maxv)
+    if v < minv then return minv end
+    if v > maxv then return maxv end
+    return v
+end
+
 local function shortestDelta(current, target)
     return norm180(target - current)
 end
 
-local function moveGear(gear, delta)
-    if not gear then return end
-
-    local amount = math.abs(delta)
-    if amount < 0.5 then return end
-
-    local dir = delta >= 0 and 1 or -1
-
-    gear.rotate(amount, dir)
+local function readYaw()
+    local a = yawAdapter.getBearingAngle(YAW_BEARING_SIDE)
+    return norm360(a * YAW_SIGN + YAW_OFFSET)
 end
 
-local function getPos(ent)
+local function readPitch()
+    local a = pitchAdapter.getBearingAngle(PITCH_BEARING_SIDE)
+    return norm180(a * PITCH_SIGN + PITCH_OFFSET)
+end
+
+local function moveGear(gear, delta)
+    if math.abs(delta) < DEADZONE then return end
+
+    delta = clamp(delta, -MAX_STEP, MAX_STEP)
+
+    local amount = math.abs(delta)
+    local dir = delta >= 0 and 1 or -1
+
+    if gear.rotate then
+        gear.rotate(amount, dir)
+    elseif gear.move then
+        gear.move(amount, dir)
+    else
+        error("No properate function found!")
+    end
+end
+
+local function getPosition(ent)
     local p = ent["position"]
     if not p then return nil end
 
-    return tonumber(p["x"]), tonumber(p["y"]), tonumber(p["z"])
+    local x = tonumber(p["x"])
+    local y = tonumber(p["y"])
+    local z = tonumber(p["z"])
+
+    if not x or not y or not z then return nil end
+    return x, y, z
 end
 
 local function calcAngles(tx, ty, tz)
-    local dx = tx - selfX
-    local dy = ty - selfY
-    local dz = tz - selfZ
+    local dx = tx - SELF_X
+    local dy = ty - SELF_Y
+    local dz = tz - SELF_Z
 
     local horizontal = math.sqrt(dx * dx + dz * dz)
+    local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
 
     local yaw = deg(math.atan2(dx, -dz))
 
     local pitch = deg(math.atan2(dy, horizontal))
 
-    return yaw, pitch, math.sqrt(dx * dx + dy * dy + dz * dz)
+    return norm360(yaw), pitch, dist
 end
 
-local function findClosestPlayer(tracks)
-    local closest = nil
-    local closestDist = math.huge
-    local closestYaw = 0
-    local closestPitch = 0
+local function getEntityList(raw)
+    return raw.players
+        or raw.entities
+        or raw.targets
+        or raw.contacts
+        or raw.tracks
+        or raw.detected
+        or raw
+end
 
-    for _, ent in pairs(tracks) do
-        local x, y, z = getPos(ent)
+local function findClosestPlayer()
+    local raw = radar.getRaw()
+    local list = getEntityList(raw)
+
+    local best = nil
+    local bestYaw = 0
+    local bestPitch = 0
+    local bestDist = math.huge
+
+    for _, ent in pairs(list) do
+        local x, y, z = getPosition(ent)
 
         if x and y and z then
             local yaw, pitch, dist = calcAngles(x, y, z)
 
-            if dist < closestDist then
-                closest = ent
-                closestDist = dist
-                closestYaw = yaw
-                closestPitch = pitch
+            if dist < bestDist then
+                best = ent
+                bestYaw = yaw
+                bestPitch = pitch
+                bestDist = dist
             end
         end
     end
 
-    return closest, closestYaw, closestPitch, closestDist
+    return best, bestYaw, bestPitch, bestDist
 end
 
 while true do
-    local tracks = radar.getTracks()
+    term.clear()
+    term.setCursorPos(1, 1)
 
-    local target, targetYaw, targetPitch, dist = findClosestPlayer(tracks)
+    local target, targetYaw, targetPitch, dist = findClosestPlayer()
+
+    local currentYaw = readYaw()
+    local currentPitch = readPitch()
+
+    print("current yaw:", currentYaw)
+    print("current pitch:", currentPitch)
 
     if target then
         local yawDelta = shortestDelta(currentYaw, targetYaw)
@@ -102,9 +169,8 @@ while true do
 
         moveGear(yawGear, yawDelta)
         moveGear(pitchGear, pitchDelta)
-
-        currentYaw = norm360(currentYaw + yawDelta)
-        currentPitch = currentPitch + pitchDelta
+    else
+        print("no player target")
     end
 
     sleep(0.2)
